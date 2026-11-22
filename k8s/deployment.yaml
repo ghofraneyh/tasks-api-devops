@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: tasks-api
-          image: VOTRE_USER_DOCKERHUB/tasks-api:latest
+          image: ghofraneyahya/tasks-api:latest
           ports:
             - containerPort: 5000
           readinessProbe:
