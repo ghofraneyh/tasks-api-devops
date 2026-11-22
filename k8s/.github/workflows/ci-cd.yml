@@ -1,0 +1,71 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/tasks-api
+
+jobs:
+  test-and-sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt bandit
+      - name: Tests
+        run: pytest -v
+      - name: SAST - Bandit
+        run: bandit -r app.py -f txt -o bandit-report.txt || true
+      - name: SAST - échec si gravité élevée
+        run: bandit -r app.py -lll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sast-report
+          path: bandit-report.txt
+
+  build-and-push:
+    needs: test-and-sast
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+  deploy-and-dast:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+      - name: Déploiement sur kind
+        run: |
+          sed -i "s|VOTRE_USER_DOCKERHUB/tasks-api:latest|${{ env.IMAGE }}:${{ github.sha }}|" k8s/deployment.yaml
+          kubectl apply -f k8s/
+          kubectl rollout status deployment/tasks-api --timeout=120s
+      - name: Smoke test
+        run: |
+          kubectl port-forward svc/tasks-api 5000:80 &
+          sleep 5
+          curl -f http://localhost:5000/health
+      - name: DAST - OWASP ZAP baseline
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: "http://localhost:5000"
+          allow_issue_writing: false
+          fail_action: false
